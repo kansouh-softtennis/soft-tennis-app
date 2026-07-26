@@ -479,11 +479,8 @@ let absences = {};    // { date: [{name, reason, ts}] }
 let reflections = {}; // { date: [{name, menu, notes, ts}] }
 let roster = { teacherPasscode: null, students: [] }; // shared
 let broadcasts = [];      // shared: [{text, ts}]  先生→全体
-let privateThreads = {};  // shared: { studentName: [{from:'student'|'teacher', text, ts}] }
-let lastSeen = {};        // shared: { name: timestamp } お知らせ/連絡タブを最後に見た時刻
+let lastSeen = {};        // shared: { name: timestamp } お知らせタブを最後に見た時刻
 let lastSeenWriteAt = 0;  // 直近でlastSeenを保存した時刻（連続保存を防ぐため）
-let threadLastSeen = {};  // shared: { studentName: timestamp } 先生がその生徒のトークを最後に見た時刻
-let threadLastSeenWriteAt = 0;
 let broadcastPage = 0; // お知らせ一覧の現在のページ（0始まり）
 let studentGoals = {};      // shared: { studentName: { monthly:{text,forMonth}, tournament:{text,forTournament} } }
 let editingMonthlyGoal = false;   // 生徒設定画面：今月の目標を編集中か
@@ -500,7 +497,6 @@ let session = null; // {role:'teacher'|'student', name:string}  (memory only, mu
 let viewYear, viewMonth;
 let selectedDate = fmtDate(new Date());
 let activeTab = "schedule";
-let selectedThreadStudent = ""; // 先生が個人連絡を見る相手
 let previewAsStudent = false; // 先生が「生徒からの見え方」を確認するデモモード
 function isTeacherNow(){ return session.role==="teacher" && !previewAsStudent; }
 
@@ -558,16 +554,14 @@ async function safeSet(key, value, shared){
 }
 
 async function loadAll(){
-  const [s, a, r, ro, bc, pt, ls, sd, tls, sg, nt] = await Promise.all([
+  const [s, a, r, ro, bc, ls, sd, sg, nt] = await Promise.all([
     safeGetKeep("schedule", true, schedule),
     safeGetKeep("absences", true, absences),
     safeGetKeep("reflections", true, reflections),
     safeGetKeep("roster", true, roster),
     safeGetKeep("broadcasts", true, broadcasts),
-    safeGetKeep("privateThreads", true, privateThreads),
     safeGetKeep("lastSeen", true, lastSeen),
     safeGetKeep("surveyData", true, { survey, surveyResponses }),
-    safeGetKeep("threadLastSeen", true, threadLastSeen),
     safeGetKeep("studentGoals", true, studentGoals),
     safeGetKeep("nextTournament", true, nextTournament),
   ]);
@@ -576,24 +570,15 @@ async function loadAll(){
   reflections = r || {};
   roster = ro || { teacherPasscode: null, students: [] };
   broadcasts = bc || [];
-  privateThreads = pt || {};
   lastSeen = ls || {};
   survey = (sd && sd.survey) || { active:false, question:"", numChoices:3, createdAt:0 };
   surveyResponses = (sd && sd.surveyResponses) || {};
-  threadLastSeen = tls || {};
   studentGoals = sg || {};
   nextTournament = nt || { name:"", updatedAt:0 };
 }
 async function saveSurveyData(){
   await safeSet("surveyData", { survey, surveyResponses }, true);
 }
-async function saveThreadLastSeen(){
-  const now = Date.now();
-  if(now - threadLastSeenWriteAt < 2000) return; // 連続保存を防ぐ
-  threadLastSeenWriteAt = now;
-  await safeSet("threadLastSeen", threadLastSeen, true);
-}
-
 const now = new Date();
 viewYear = now.getFullYear();
 viewMonth = now.getMonth();
@@ -814,27 +799,8 @@ function countNoticeUnread(){
   });
   return count;
 }
-function hasUnreadFromStudent(name){
-  const since = threadLastSeen[name] || 0;
-  return (privateThreads[name]||[]).some(m=> m.ts > since && m.from==="student");
-}
-function countMessagesUnread(){
-  if(!session || previewAsStudent) return 0;
-  if(session.role==="teacher"){
-    let count = 0;
-    roster.students.forEach(s=>{ if(hasUnreadFromStudent(s.name)) count++; });
-    return count;
-  }else{
-    const since = lastSeen[session.name] || 0;
-    return (privateThreads[session.name]||[]).filter(m=> m.ts > since && m.from==="teacher").length;
-  }
-}
 function renderNoticeBadge(){
   const n = countNoticeUnread();
-  return n>0 ? ` <span class="tab-badge">${n}</span>` : '';
-}
-function renderMessagesBadge(){
-  const n = countMessagesUnread();
   return n>0 ? ` <span class="tab-badge">${n}</span>` : '';
 }
 
@@ -872,11 +838,10 @@ function renderApp(){
       <button data-tab="schedule" class="${activeTab==='schedule'?'active':''}"><span class="tab-icon">📅</span><span class="tab-label">予定</span></button>
       <button data-tab="reflection" class="${activeTab==='reflection'?'active':''}"><span class="tab-icon">📝</span><span class="tab-label">振り返り</span></button>
       <button data-tab="notice" class="${activeTab==='notice'?'active':''}"><span class="tab-icon">🔔</span><span class="tab-label">連絡${renderNoticeBadge()}</span></button>
-      <button data-tab="messages" class="${activeTab==='messages'?'active':''}"><span class="tab-icon">💬</span><span class="tab-label">メッセージ${renderMessagesBadge()}</span></button>
       <button data-tab="settings" class="${activeTab==='settings'?'active':''}"><span class="tab-icon">⚙️</span><span class="tab-label">設定</span></button>
     </div>
 
-    ${activeTab==='settings' ? (isTeacher ? renderSettingsPanel() : renderStudentSettingsPanel()) : (activeTab==='notice' ? renderNoticePanel() : (activeTab==='messages' ? renderMessagesPanel() : renderMainPanel()))}
+    ${activeTab==='settings' ? (isTeacher ? renderSettingsPanel() : renderStudentSettingsPanel()) : (activeTab==='notice' ? renderNoticePanel() : renderMainPanel())}
   </div>`;
 }
 
@@ -1262,19 +1227,6 @@ function renderNoticePanel(){
   </div>`;
 }
 
-function renderMessagesPanel(){
-  const isTeacher = isTeacherNow();
-  return `
-  <h2 class="page-title">💬 メッセージ</h2>
-  <div class="panel single">
-    <div class="card">
-      <h3>${isTeacher? "生徒との連絡" : "先生との連絡"}</h3>
-      ${isTeacher ? renderTeacherThreadPicker() : ""}
-      <div id="threadArea">${renderThreadHtml(isTeacher)}</div>
-    </div>
-  </div>`;
-}
-
 function renderBroadcastListHtml(isTeacher){
   if(broadcasts.length===0) return `<div class="hint" style="margin:0;">まだお知らせはありません。</div>`;
   const ONE_MONTH_MS = 30*24*60*60*1000;
@@ -1328,56 +1280,6 @@ function renderAbsenceFeedHtml(){
     </div>`;
   }).join("");
 }
-
-function renderTeacherThreadPicker(){
-  if(roster.students.length===0) return `<div class="hint">生徒が登録されていません。</div>`;
-  return `
-    <div class="chat-tab-row">
-      ${roster.students.map(s=>{
-        const unread = hasUnreadFromStudent(s.name);
-        const active = s.name===selectedThreadStudent;
-        return `<button class="chat-tab ${active?'active':''}" data-student="${escapeHtml(s.name)}">${escapeHtml(s.name)}${unread? ` <span class="chat-dot"></span>`:''}</button>`;
-      }).join("")}
-    </div>
-  `;
-}
-function selectThreadStudent(name){
-  selectedThreadStudent = name;
-  if(session && session.role==="teacher" && !previewAsStudent){
-    threadLastSeen[name] = Date.now();
-    saveThreadLastSeen();
-  }
-  render();
-}
-
-function renderThreadHtml(isTeacher){
-  const threadName = isTeacher ? selectedThreadStudent : session.name;
-  if(isTeacher && !threadName){
-    return `<div class="hint" style="margin:0;">生徒を選ぶとやり取りが表示されます。</div>`;
-  }
-  const msgs = privateThreads[threadName] || [];
-  const listHtml = msgs.length===0
-    ? `<div class="hint" style="margin:0 0 10px;">まだメッセージはありません。最初のメッセージを送ってみましょう。</div>`
-    : msgs.map(m=>{
-        const mine = isTeacher ? m.from==='teacher' : m.from==='student';
-        return `
-        <div class="chat-bubble-row ${mine?'mine':''}">
-          <div>
-            <div class="chat-bubble ${mine?'mine':'theirs'}">${escapeHtml(m.text)}</div>
-            <div class="chat-bubble-time" style="text-align:${mine?'right':'left'};">${new Date(m.ts).toLocaleString()}</div>
-          </div>
-        </div>`;
-      }).join("");
-  return `
-    <div class="chat-scroll" id="chatScroll">${listHtml}</div>
-    <div class="field-row" style="margin-top:10px;">
-      <input id="threadInput" placeholder="${isTeacher? 'この生徒への返信を入力':'先生へのメッセージを入力'}">
-      <button class="btn" id="sendThreadMsg">送信</button>
-    </div>
-    <div class="status-msg" id="threadMsg"></div>
-  `;
-}
-
 
 function renderSettingsPanel(){
   return `
@@ -1504,7 +1406,6 @@ function bindAppEvents(){
 
   if(activeTab==="settings"){ if(isTeacherNow()){ bindSettingsEvents(); } else { bindStudentSettingsEvents(); } return; }
   if(activeTab==="notice"){ bindNoticeEvents(); return; }
-  if(activeTab==="messages"){ bindMessagesEvents(); return; }
 
   const prevBtn = $("#prevMonth"), nextBtn = $("#nextMonth");
   if(prevBtn) prevBtn.onclick = ()=>{ viewMonth--; if(viewMonth<0){viewMonth=11;viewYear--;} render(); };
@@ -1798,39 +1699,6 @@ function bindNoticeEvents(){
         render();
       };
     }
-  }
-}
-
-function bindMessagesEvents(){
-  const isTeacher = isTeacherNow();
-
-  if(!previewAsStudent){
-    const now = Date.now();
-    if(now - lastSeenWriteAt > 4000){
-      lastSeen[session.name] = now;
-      lastSeenWriteAt = now;
-      safeSet("lastSeen", lastSeen, true);
-    }
-  }
-
-  $$(".chat-tab[data-student]").forEach(btn=>{
-    btn.onclick = ()=>{ selectThreadStudent(btn.dataset.student); };
-  });
-
-  const sendThread = $("#sendThreadMsg");
-  if(sendThread){
-    sendThread.onclick = async ()=>{
-      if(previewAsStudent){ $("#threadMsg").textContent = "デモモードのため、実際には送信されません。"; return; }
-      const text = $("#threadInput").value.trim();
-      if(!text) return;
-      const threadName = isTeacher ? selectedThreadStudent : session.name;
-      if(isTeacher && !threadName){ $("#threadMsg").textContent = "生徒を選んでください。"; return; }
-      await loadAll(); // 他のメッセージを消さないよう最新状態を取得してから追加する
-      if(!privateThreads[threadName]) privateThreads[threadName] = [];
-      privateThreads[threadName].push({ from: isTeacher? "teacher":"student", text, ts: Date.now() });
-      await safeSet("privateThreads", privateThreads, true);
-      render();
-    };
   }
 }
 
