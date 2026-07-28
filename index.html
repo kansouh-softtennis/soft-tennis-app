@@ -281,6 +281,15 @@
   .type-badge.practice{ background:var(--practice); color:#0d4a5c; }
   .type-badge.match{ background:var(--match); color:#5c4a00; }
   .type-badge.off{ background:var(--off); color:var(--ink-soft); border:1px solid var(--border); }
+  .gcal-steps{
+    margin:10px 0 8px;
+    padding-left:20px;
+    font-size:12.5px;
+    line-height:1.7;
+    color:var(--ink);
+  }
+  .gcal-steps li{ margin-bottom:6px; }
+
   .goal-display{
     background:#fff;
     border:1px solid var(--border);
@@ -506,6 +515,7 @@ let surveyResponses = {}; // shared: { studentName: { rankings:[name,...], submi
 let surveyCreating = false; // 先生がアンケート新規作成フォームを表示中か（ローカル状態）
 let surveyDeleteConfirming = false; // 先生がアンケート削除の確認表示中か（ローカル状態）
 let rosterListExpanded = false; // 先生設定画面：生徒一覧を開いているか
+let showGoogleCalInstructions = false; // 設定画面：Googleカレンダー登録手順を開いているか
 let expandedRosterStudents = new Set(); // 開いている生徒詳細のキー（名前）
 
 let session = null; // {role:'teacher'|'student', name:string}  (memory only, must log in each visit)
@@ -1446,6 +1456,19 @@ function renderCalendarSubscribeCard(){
       <a class="btn" style="display:inline-block;text-decoration:none;text-align:center;margin-top:8px;" href="${webcalUrl}">カレンダーに登録する</a>
       <div class="hint" style="margin-top:10px;">うまく開けない場合は、お使いのカレンダーアプリの「URLで購読」機能に、次のURLを貼り付けてください。</div>
       <input readonly value="${httpsUrl}" style="margin-top:6px;" onclick="this.select();">
+
+      <button class="btn ghost" id="toggleGoogleCalInstructions" style="width:100%;margin-top:12px;">
+        Googleカレンダーに登録する場合はこちら ${showGoogleCalInstructions?'▲':'▼'}
+      </button>
+      ${showGoogleCalInstructions ? `
+        <ol class="gcal-steps">
+          <li>スマホのブラウザ（Safariなど）で <strong>calendar.google.com</strong> を開く</li>
+          <li>スマホ表示のままだと登録できないため、ブラウザのメニューから「PC版サイトを表示」に切り替える</li>
+          <li>左側の「他のカレンダー」の＋ボタン→「URLで追加」を選ぶ</li>
+          <li>上に表示されているURLを貼り付けて「カレンダーを追加」を押す</li>
+        </ol>
+        <div class="hint">一度登録すれば、スマホのGoogleカレンダーアプリにも自動的に反映されます。</div>
+      `:''}
     </div>
   `;
 }
@@ -1859,7 +1882,15 @@ function bindBulkEvents(){
   if(exitBtn) exitBtn.onclick = ()=>{ bulkMode=false; bulkSelectedDates=new Set(); render(); };
 }
 
+function bindCalendarSubscribeEvents(){
+  const toggleGcal = $("#toggleGoogleCalInstructions");
+  if(toggleGcal){
+    toggleGcal.onclick = ()=>{ showGoogleCalInstructions = !showGoogleCalInstructions; render(); };
+  }
+}
+
 function bindSettingsEvents(){
+  bindCalendarSubscribeEvents();
   const toggleRosterList = $("#toggleRosterList");
   if(toggleRosterList){
     toggleRosterList.onclick = ()=>{ rosterListExpanded = !rosterListExpanded; render(); };
@@ -1899,6 +1930,7 @@ function bindSettingsEvents(){
 }
 
 function bindStudentSettingsEvents(){
+  bindCalendarSubscribeEvents();
   const editMonthlyBtn = $("#editMonthlyGoalBtn");
   if(editMonthlyBtn){
     editMonthlyBtn.onclick = ()=>{ editingMonthlyGoal = true; render(); };
