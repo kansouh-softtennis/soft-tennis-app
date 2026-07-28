@@ -2043,6 +2043,9 @@ async function removeReflection(i){
   render();
 }
 async function removeStudent(i){
+  const name = roster.students[i] ? roster.students[i].name : "";
+  const confirmed = window.confirm(`${name}さんを名簿から削除します。よろしいですか？（元に戻せません）`);
+  if(!confirmed) return;
   roster.students.splice(i,1);
   await safeSet("roster", roster, true);
   render();
