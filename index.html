@@ -348,6 +348,20 @@
   }
   .login-card .btn{ width:100%; padding:11px; font-size:14px; }
   .settings-list .list-item{ align-items:center; }
+  .roster-toggle-btn{
+    width:100%; display:flex; justify-content:space-between; align-items:center;
+    border:none; background:transparent; padding:2px; cursor:pointer; font-family:inherit; text-align:left;
+  }
+  .roster-toggle-arrow{ font-size:13px; color:var(--ink-soft); }
+  .roster-student-item{ border-top:1px solid var(--border); }
+  .roster-student-item:first-child{ border-top:none; }
+  .roster-student-header{
+    width:100%; display:flex; justify-content:space-between; align-items:center;
+    border:none; background:transparent; padding:10px 2px; cursor:pointer; font-family:inherit; text-align:left;
+  }
+  .roster-student-header .name{ font-weight:700; color:var(--court-green); font-size:13px; }
+  .roster-student-header .meta{ font-size:11px; color:var(--ink-soft); }
+  .roster-student-detail{ padding:0 2px 14px; font-size:13px; }
   .chat-tab-row{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
   .chat-tab{
     border:1px solid var(--border);
@@ -491,6 +505,8 @@ let survey = { active:false, question:"", numChoices:3, createdAt:0 }; // shared
 let surveyResponses = {}; // shared: { studentName: { rankings:[name,...], submittedAt } }
 let surveyCreating = false; // 先生がアンケート新規作成フォームを表示中か（ローカル状態）
 let surveyDeleteConfirming = false; // 先生がアンケート削除の確認表示中か（ローカル状態）
+let rosterListExpanded = false; // 先生設定画面：生徒一覧を開いているか
+let expandedRosterStudents = new Set(); // 開いている生徒詳細のキー（名前）
 
 let session = null; // {role:'teacher'|'student', name:string}  (memory only, must log in each visit)
 
@@ -525,6 +541,65 @@ function getMyGoalState(name){
   return { currentMonth, tournamentName, monthly, tournament, monthlyIsCurrent, tournamentIsCurrent };
 }
 function escapeHtml(str){ return (str||"").replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+/* ---------------- 振り返り・戦績の集計 ---------------- */
+function getAllReflectionsFlat(){
+  const flat = [];
+  Object.keys(reflections).forEach(date=>{
+    (reflections[date]||[]).forEach(r=>{
+      flat.push(Object.assign({date}, r));
+    });
+  });
+  return flat;
+}
+function parseGameCountResult(gameCount){
+  const m = String(gameCount||"").match(/(\d+)\s*[-－ー~〜]\s*(\d+)/);
+  if(!m) return null;
+  const a = parseInt(m[1],10), b = parseInt(m[2],10);
+  if(isNaN(a)||isNaN(b)) return null;
+  if(a>b) return "win";
+  if(a<b) return "lose";
+  return "draw";
+}
+function computeReflectionStatsByStudent(){
+  const flat = getAllReflectionsFlat();
+  const byStudent = {};
+  flat.forEach(r=>{
+    if(!byStudent[r.name]) byStudent[r.name] = { count:0, lastDate:null, entries:[] };
+    const st = byStudent[r.name];
+    st.count++;
+    st.entries.push(r);
+    if(!st.lastDate || r.date > st.lastDate) st.lastDate = r.date;
+  });
+  return byStudent;
+}
+function computeMatchStatsByStudent(){
+  const flat = getAllReflectionsFlat();
+  const byStudent = {};
+  flat.forEach(r=>{
+    let matches = Array.isArray(r.matches) ? r.matches : [];
+    if(matches.length===0 && (r.isMatch || r.kind==="match")){
+      matches = [{ partner:r.partner, opponent1:r.opponent1, opponent2:r.opponent2, gameCount:r.gameCount }];
+    }
+    matches.forEach(m=>{
+      if(!byStudent[r.name]) byStudent[r.name] = { played:0, win:0, lose:0, draw:0, unknown:0, partners:{} };
+      const st = byStudent[r.name];
+      st.played++;
+      const result = parseGameCountResult(m.gameCount);
+      if(result==="win") st.win++;
+      else if(result==="lose") st.lose++;
+      else if(result==="draw") st.draw++;
+      else st.unknown++;
+      if(m.partner){
+        if(!st.partners[m.partner]) st.partners[m.partner] = {played:0, win:0, lose:0};
+        st.partners[m.partner].played++;
+        if(result==="win") st.partners[m.partner].win++;
+        else if(result==="lose") st.partners[m.partner].lose++;
+      }
+    });
+  });
+  return byStudent;
+}
 
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwMRFOkIbLGUqtDwmzP1AtT5fam_t-tzs9MX8eXEaXfrwCrKHElV475fJyTHSRC8TTp/exec";
 
@@ -1282,6 +1357,8 @@ function renderAbsenceFeedHtml(){
 }
 
 function renderSettingsPanel(){
+  const reflStats = computeReflectionStatsByStudent();
+  const matchStats = computeMatchStatsByStudent();
   return `
   <h2 class="page-title">⚙️ 設定</h2>
   <div class="panel single">
@@ -1295,20 +1372,52 @@ function renderSettingsPanel(){
       <div class="status-msg" id="stuMsg"></div>
     </div>
     <div class="card settings-list">
-      <h3>登録済みの生徒（${roster.students.length}名）</h3>
-      <div class="hint">生徒は自分の学校のGoogleアカウントでログインします。初回ログイン時に自動で名前と紐づきます。</div>
-      ${roster.students.length===0 ? `<div class="hint" style="margin:0;">まだ登録されていません。</div>` :
-        roster.students.map((s,i)=>`
-          <div class="list-item">
-            <span class="name">${escapeHtml(s.name)}</span>
-            <div>
-              ${s.googleEmail
-                ? `<span class="meta">${escapeHtml(s.googleEmail)}</span>`
-                : `<span class="meta">未連携</span>`}
-              <button class="btn ghost" style="padding:3px 10px;font-size:11px;margin-left:6px;" onclick="removeStudent(${i})">削除</button>
-            </div>
-          </div>
-        `).join("")}
+      <button class="roster-toggle-btn" id="toggleRosterList">
+        <h3 style="margin:0;">登録済みの生徒（${roster.students.length}名）</h3>
+        <span class="roster-toggle-arrow">${rosterListExpanded?'▲':'▼'}</span>
+      </button>
+      ${rosterListExpanded ? `
+        <div class="hint" style="margin:10px 0;">名前をタップすると、目標や振り返り・戦績が確認できます。</div>
+        ${roster.students.length===0 ? `<div class="hint" style="margin:0;">まだ登録されていません。</div>` :
+          roster.students.map((s,i)=>{
+            const expanded = expandedRosterStudents.has(s.name);
+            const gs = getMyGoalState(s.name);
+            const rs = reflStats[s.name] || {count:0, lastDate:null};
+            const ms = matchStats[s.name] || {played:0, win:0, lose:0, draw:0, unknown:0, partners:{}};
+            const partnerEntries = Object.keys(ms.partners);
+            return `
+            <div class="roster-student-item">
+              <button class="roster-student-header" data-roster-student="${escapeHtml(s.name)}">
+                <span class="name">${escapeHtml(s.name)}</span>
+                <span class="meta">${s.googleEmail? "連携済み" : "未連携"} ${expanded?'▲':'▼'}</span>
+              </button>
+              ${expanded ? `
+                <div class="roster-student-detail">
+                  <div class="hint" style="margin-bottom:2px;">連携中のGoogleアカウント</div>
+                  <div style="margin-bottom:10px;">${s.googleEmail? escapeHtml(s.googleEmail) : "未連携"}</div>
+
+                  <div class="hint" style="margin-bottom:2px;">今月の目標</div>
+                  <div style="margin-bottom:10px;">${gs.monthlyIsCurrent? escapeHtml(gs.monthly.text) : "（未設定）"}</div>
+
+                  <div class="hint" style="margin-bottom:2px;">${gs.tournamentName? escapeHtml(gs.tournamentName)+"に向けての目標" : "次の大会に向けての目標"}</div>
+                  <div style="margin-bottom:10px;">${gs.tournamentIsCurrent? escapeHtml(gs.tournament.text) : "（未設定）"}</div>
+
+                  <div class="hint" style="margin-bottom:2px;">振り返り</div>
+                  <div style="margin-bottom:10px;">${rs.count}件${rs.lastDate? `（最終提出：${fmtDateLabel(rs.lastDate)}）`:''}</div>
+
+                  <div class="hint" style="margin-bottom:2px;">試合成績</div>
+                  <div style="margin-bottom:${partnerEntries.length? '4px':'10px'};">${ms.played}試合中 ${ms.win}勝 ${ms.lose}敗${ms.draw? ` ${ms.draw}分`:''}${ms.unknown? `（うち${ms.unknown}件はゲームカウント未記入）`:''}</div>
+                  ${partnerEntries.length? `
+                    <div class="hint" style="margin-bottom:2px;">よく組むペア</div>
+                    <div style="margin-bottom:10px;">${partnerEntries.map(p=>`${escapeHtml(p)}（${ms.partners[p].played}戦${ms.partners[p].win}勝${ms.partners[p].lose}敗）`).join('、')}</div>
+                  `:''}
+
+                  <button class="btn ghost" style="padding:3px 10px;font-size:11px;" onclick="removeStudent(${i})">この生徒を削除</button>
+                </div>
+              `:''}
+            </div>`;
+          }).join("")}
+      `:''}
     </div>
     <div class="card">
       <h3>先生用パスコードの変更</h3>
@@ -1323,7 +1432,22 @@ function renderSettingsPanel(){
       <button class="btn ghost" id="saveTournamentBtn">保存する</button>
       <div class="status-msg" id="tournamentMsg"></div>
     </div>
+    ${renderCalendarSubscribeCard()}
   </div>`;
+}
+
+function renderCalendarSubscribeCard(){
+  const httpsUrl = GAS_URL + "?ics=1";
+  const webcalUrl = httpsUrl.replace(/^https:\/\//, "webcal://");
+  return `
+    <div class="card">
+      <h3>予定をカレンダーアプリに登録</h3>
+      <div class="hint">一度登録すると、練習予定の追加・変更が自動でカレンダーアプリに反映されます（反映まで数時間かかることがあります）。</div>
+      <a class="btn" style="display:inline-block;text-decoration:none;text-align:center;margin-top:8px;" href="${webcalUrl}">カレンダーに登録する</a>
+      <div class="hint" style="margin-top:10px;">うまく開けない場合は、お使いのカレンダーアプリの「URLで購読」機能に、次のURLを貼り付けてください。</div>
+      <input readonly value="${httpsUrl}" style="margin-top:6px;" onclick="this.select();">
+    </div>
+  `;
 }
 
 function renderStudentSettingsPanel(){
@@ -1375,6 +1499,7 @@ function renderStudentSettingsPanel(){
       ${tournamentHtml}
       <div class="status-msg" id="tournamentGoalMsg"></div>
     </div>
+    ${renderCalendarSubscribeCard()}
   </div>`;
 }
 
@@ -1735,6 +1860,18 @@ function bindBulkEvents(){
 }
 
 function bindSettingsEvents(){
+  const toggleRosterList = $("#toggleRosterList");
+  if(toggleRosterList){
+    toggleRosterList.onclick = ()=>{ rosterListExpanded = !rosterListExpanded; render(); };
+  }
+  $$(".roster-student-header[data-roster-student]").forEach(btn=>{
+    btn.onclick = ()=>{
+      const name = btn.dataset.rosterStudent;
+      if(expandedRosterStudents.has(name)) expandedRosterStudents.delete(name);
+      else expandedRosterStudents.add(name);
+      render();
+    };
+  });
   $("#addStuBtn").onclick = async ()=>{
     const name = $("#newStuName").value.trim();
     if(!name){ $("#stuMsg").textContent = "名前を入力してください。"; return; }
