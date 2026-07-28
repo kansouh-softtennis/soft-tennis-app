@@ -398,6 +398,9 @@
   .roster-student-header .name{ font-weight:700; color:var(--court-green); font-size:13px; }
   .roster-student-header .meta{ font-size:11px; color:var(--ink-soft); }
   .roster-student-detail{ padding:0 2px 14px; font-size:13px; }
+  .delete-confirm-box{
+    background:#FDECEA; border:1px solid #F3B9B0; border-radius:10px; padding:10px 12px; margin-top:4px;
+  }
   .chat-tab-row{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
   .chat-tab{
     border:1px solid var(--border);
@@ -511,6 +514,13 @@
   .refl-name-btn .meta{ font-size:11px; color:var(--ink-soft); }
   .refl-detail{ padding:0 2px 12px; }
   .refl-section-label{ font-size:11px; font-weight:700; color:var(--ink-soft); margin-top:8px; margin-bottom:2px; }
+  .refl-group-label{
+    font-size:12px; font-weight:700; color:var(--court-green);
+    letter-spacing:0.03em; margin-bottom:6px;
+  }
+  .match-line-summary{
+    font-size:13px; color:var(--ink); padding:0 2px 10px; line-height:1.5;
+  }
   .time-range-picker{ display:flex; align-items:center; gap:3px; flex-wrap:wrap; }
   .time-range-picker select{ min-width:56px; flex:none; padding:8px 6px; }
   .time-range-picker .tr-label{ font-size:12.5px; color:var(--ink-soft); margin-right:4px; }
@@ -544,6 +554,7 @@ let surveyDeleteConfirming = false; // 先生がアンケート削除の確認�
 let rosterListExpanded = false; // 先生設定画面：生徒一覧を開いているか
 let showGoogleCalInstructions = false; // 設定画面：Googleカレンダー登録手順を開いているか
 let expandedRosterStudents = new Set(); // 開いている生徒詳細のキー（名前）
+let pendingDeleteStudent = ""; // 削除確認中の生徒名
 
 let session = null; // {role:'teacher'|'student', name:string}  (memory only, must log in each visit)
 
@@ -1281,49 +1292,90 @@ function renderAbsentListHtml(isTeacher){
   }).join("");
 }
 
+const CIRCLED_DIGITS = ["⓪","①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩","⑪","⑫","⑬","⑭","⑮","⑯","⑰","⑱","⑲","⑳"];
+function circleDigit(n){ return (n>=0 && n<CIRCLED_DIGITS.length) ? CIRCLED_DIGITS[n] : String(n); }
+function formatGameCountWithWinner(gameCount){
+  const m = String(gameCount||"").match(/(\d+)\s*[-－ー~〜]\s*(\d+)/);
+  if(!m) return escapeHtml(gameCount||"");
+  const a = parseInt(m[1],10), b = parseInt(m[2],10);
+  if(isNaN(a)||isNaN(b)) return escapeHtml(gameCount||"");
+  if(a>b) return `${circleDigit(a)}-${b}`;
+  if(b>a) return `${a}-${circleDigit(b)}`;
+  return `${a}-${b}`;
+}
+function formatMatchLine(m){
+  const opponents = [m.opponent1, m.opponent2].filter(Boolean).join("・") || m.opponent || "";
+  const parts = [];
+  if(m.partner) parts.push(`＆${escapeHtml(m.partner)}`);
+  if(m.gameCount) parts.push(formatGameCountWithWinner(m.gameCount));
+  if(opponents) parts.push(escapeHtml(opponents));
+  return parts.length ? `【${parts.join(' ')}】` : '';
+}
+
 function renderReflListHtml(arr, isTeacher){
   if(arr.length===0) return `<div class="hint" style="margin:0;">まだ振り返りが提出されていません。</div>`;
   const sorted = [...arr].sort((a,b)=>b.ts-a.ts);
-  return sorted.map(r=>{
+
+  const matchItems = [];
+  const generalItems = [];
+  sorted.forEach(r=>{
     const realIdx = arr.indexOf(r);
-    const key = `${selectedDate}-${r.ts}-${realIdx}`;
-    const expanded = expandedReflections.has(key);
-    const playText = r.playNotes || "";
-    const attitudeText = r.attitudeNotes || "";
-    // 後方互換: 旧フォーマット（isMatchの単体エントリ）を matches 配列に変換
     let matches = Array.isArray(r.matches) ? r.matches : [];
     if(matches.length===0 && (r.isMatch || r.kind==="match")){
       matches = [{ partner:r.partner, opponent1:r.opponent1, opponent2:r.opponent2, gameCount:r.gameCount, notes:r.notes }];
     }
-    const hasMatch = matches.length>0;
-    return `
-    <div class="refl-accordion-item">
-      <button class="refl-name-btn" data-reflkey="${key}">
-        <span class="name">${escapeHtml(r.name)}${hasMatch? ' 🎾':''}</span>
-        <span class="meta">${new Date(r.ts).toLocaleString()} ${expanded? '▲':'▼'}</span>
-      </button>
-      ${expanded ? `
-        <div class="refl-detail">
-          ${playText ? `<div class="refl-section-label">① プレー面での振り返り・学び</div><div class="refl-body">${escapeHtml(playText)}</div>`:''}
-          ${attitudeText ? `<div class="refl-section-label">② 雰囲気・取り組み面での振り返り・学び</div><div class="refl-body">${escapeHtml(attitudeText)}</div>`:''}
-          ${matches.map((m,mi)=>{
-            const opponents = [m.opponent1, m.opponent2].filter(Boolean).join("・") || m.opponent || "";
-            return `
-            <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--border);">
-              <span class="refl-menu">試合${matches.length>1? (mi+1):''}</span>
-              <div style="margin-top:6px;font-size:13px;">
-                ${m.partner? `<div>パートナー：<strong>${escapeHtml(m.partner)}</strong></div>`:''}
-                ${opponents? `<div>対戦相手：<strong>${escapeHtml(opponents)}</strong></div>`:''}
-                ${m.gameCount? `<div>ゲームカウント：<strong>${escapeHtml(m.gameCount)}</strong></div>`:''}
-              </div>
-              ${m.notes ? `<div class="refl-body" style="margin-top:6px;">${escapeHtml(m.notes)}</div>`:''}
-            </div>`;
-          }).join("")}
-          ${isTeacher? `<button class="btn ghost" style="padding:2px 8px;font-size:11px;margin-top:8px;" onclick="removeReflection(${realIdx})">削除</button>`:''}
-        </div>
-      `:''}
-    </div>`;
-  }).join("");
+    if(matches.length>0) matchItems.push({r, realIdx, matches});
+    if(r.playNotes || r.attitudeNotes) generalItems.push({r, realIdx});
+  });
+
+  const matchHtml = matchItems.length===0 ? `<div class="hint" style="margin:0;">この日の試合記録はありません。</div>` :
+    matchItems.map(({r,realIdx,matches})=>{
+      const key = `${selectedDate}-${r.ts}-${realIdx}-match`;
+      const expanded = expandedReflections.has(key);
+      const notesHtml = matches.map((m,mi)=> m.notes ? `<div class="refl-section-label">${matches.length>1?`試合${mi+1}の`:''}振り返り</div><div class="refl-body">${escapeHtml(m.notes)}</div>` : '').join("");
+      return `
+      <div class="refl-accordion-item">
+        <button class="refl-name-btn" data-reflkey="${key}">
+          <span class="name">${escapeHtml(r.name)}</span>
+          <span class="meta">${expanded?'▲':'▼'}</span>
+        </button>
+        <div class="match-line-summary">${matches.map(m=>formatMatchLine(m)).join('　')}</div>
+        ${expanded ? `
+          <div class="refl-detail">
+            ${notesHtml}
+            <div class="hint" style="margin-top:4px;margin-bottom:0;">${new Date(r.ts).toLocaleString()}</div>
+            ${isTeacher? `<button class="btn ghost" style="padding:2px 8px;font-size:11px;margin-top:8px;" onclick="removeReflection(${realIdx})">削除</button>`:''}
+          </div>
+        `:''}
+      </div>`;
+    }).join("");
+
+  const generalHtml = generalItems.length===0 ? `<div class="hint" style="margin:0;">この日の練習の振り返りはありません。</div>` :
+    generalItems.map(({r,realIdx})=>{
+      const key = `${selectedDate}-${r.ts}-${realIdx}-general`;
+      const expanded = expandedReflections.has(key);
+      return `
+      <div class="refl-accordion-item">
+        <button class="refl-name-btn" data-reflkey="${key}">
+          <span class="name">${escapeHtml(r.name)}</span>
+          <span class="meta">${new Date(r.ts).toLocaleString()} ${expanded? '▲':'▼'}</span>
+        </button>
+        ${expanded ? `
+          <div class="refl-detail">
+            ${r.playNotes ? `<div class="refl-section-label">① プレー面での振り返り・学び</div><div class="refl-body">${escapeHtml(r.playNotes)}</div>`:''}
+            ${r.attitudeNotes ? `<div class="refl-section-label">② 雰囲気・取り組み面での振り返り・学び</div><div class="refl-body">${escapeHtml(r.attitudeNotes)}</div>`:''}
+            ${isTeacher? `<button class="btn ghost" style="padding:2px 8px;font-size:11px;margin-top:8px;" onclick="removeReflection(${realIdx})">削除</button>`:''}
+          </div>
+        `:''}
+      </div>`;
+    }).join("");
+
+  return `
+    <div class="refl-group-label">🎾 試合の記録</div>
+    ${matchHtml}
+    <div class="refl-group-label" style="margin-top:16px;">📝 練習の振り返り</div>
+    ${generalHtml}
+  `;
 }
 
 /* ---------------- NOTICE (broadcasts + absence feed + private messages) ---------------- */
@@ -1465,7 +1517,15 @@ function renderSettingsPanel(){
                     <div style="margin-bottom:10px;">${partnerEntries.map(p=>`${escapeHtml(p)}（${ms.partners[p].played}戦${ms.partners[p].win}勝${ms.partners[p].lose}敗）`).join('、')}</div>
                   `:''}
 
-                  <button class="btn ghost" style="padding:3px 10px;font-size:11px;" onclick="removeStudent(${i})">この生徒を削除</button>
+                  ${pendingDeleteStudent===s.name ? `
+                    <div class="delete-confirm-box">
+                      <div class="hint" style="color:var(--alert);font-weight:700;margin-bottom:8px;">${escapeHtml(s.name)}さんを削除します。よろしいですか？（元に戻せません）</div>
+                      <button class="btn alert" style="padding:5px 12px;font-size:11px;" onclick="confirmRemoveStudent(${i})">削除する</button>
+                      <button class="btn ghost" style="padding:5px 12px;font-size:11px;margin-left:6px;" onclick="cancelRemoveStudent()">キャンセル</button>
+                    </div>
+                  ` : `
+                    <button class="btn ghost" style="padding:3px 10px;font-size:11px;" onclick="askRemoveStudent('${escapeHtml(s.name).replace(/'/g,"\\'")}')">この生徒を削除</button>
+                  `}
                 </div>
               `:''}
             </div>`;
@@ -1963,6 +2023,7 @@ function bindSettingsEvents(){
       const name = btn.dataset.rosterStudent;
       if(expandedRosterStudents.has(name)) expandedRosterStudents.delete(name);
       else expandedRosterStudents.add(name);
+      pendingDeleteStudent = "";
       render();
     };
   });
@@ -2042,12 +2103,18 @@ async function removeReflection(i){
   await safeSet("reflections", reflections, true);
   render();
 }
-async function removeStudent(i){
-  const name = roster.students[i] ? roster.students[i].name : "";
-  const confirmed = window.confirm(`${name}さんを名簿から削除します。よろしいですか？（元に戻せません）`);
-  if(!confirmed) return;
+function askRemoveStudent(name){
+  pendingDeleteStudent = name;
+  render();
+}
+function cancelRemoveStudent(){
+  pendingDeleteStudent = "";
+  render();
+}
+async function confirmRemoveStudent(i){
   roster.students.splice(i,1);
   await safeSet("roster", roster, true);
+  pendingDeleteStudent = "";
   render();
 }
 function togglePassView(i){
