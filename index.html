@@ -555,6 +555,8 @@ let rosterListExpanded = false; // 先生設定画面：生徒一覧を開いて
 let showGoogleCalInstructions = false; // 設定画面：Googleカレンダー登録手順を開いているか
 let expandedRosterStudents = new Set(); // 開いている生徒詳細のキー（名前）
 let pendingDeleteStudent = ""; // 削除確認中の生徒名
+let pendingDeleteReflection = null; // 削除確認中の振り返りindex
+let pendingDeleteSchedule = false; // 予定削除の確認表示中か
 
 let session = null; // {role:'teacher'|'student', name:string}  (memory only, must log in each visit)
 
@@ -1082,6 +1084,13 @@ function renderDetailHtml(){
           <button class="btn" id="saveSched">この日の予定を保存</button>
           ${s? `<button class="btn ghost" id="clearSched" style="margin-left:8px;">予定を削除</button>`:''}
           <button class="btn ghost" id="enterBulk" style="margin-left:8px;">複数日をまとめて設定</button>
+          ${(s && pendingDeleteSchedule) ? `
+            <div class="delete-confirm-box" style="margin-top:10px;">
+              <div class="hint" style="color:var(--alert);font-weight:700;margin-bottom:8px;">この日の予定を削除します。よろしいですか？（元に戻せません）</div>
+              <button class="btn alert" style="padding:5px 12px;font-size:11px;" id="confirmClearSched">削除する</button>
+              <button class="btn ghost" style="padding:5px 12px;font-size:11px;margin-left:6px;" id="cancelClearSched">キャンセル</button>
+            </div>
+          `:''}
           <div class="status-msg" id="schedMsg"></div>
         ` : `
           <div class="sched-view">
@@ -1344,7 +1353,13 @@ function renderReflListHtml(arr, isTeacher){
           <div class="refl-detail">
             ${notesHtml}
             <div class="hint" style="margin-top:4px;margin-bottom:0;">${new Date(r.ts).toLocaleString()}</div>
-            ${isTeacher? `<button class="btn ghost" style="padding:2px 8px;font-size:11px;margin-top:8px;" onclick="removeReflection(${realIdx})">削除</button>`:''}
+            ${isTeacher? (pendingDeleteReflection===realIdx ? `
+              <div class="delete-confirm-box" style="margin-top:8px;">
+                <div class="hint" style="color:var(--alert);font-weight:700;margin-bottom:8px;">この振り返りを削除します。よろしいですか？（元に戻せません）</div>
+                <button class="btn alert" style="padding:5px 12px;font-size:11px;" onclick="confirmRemoveReflection(${realIdx})">削除する</button>
+                <button class="btn ghost" style="padding:5px 12px;font-size:11px;margin-left:6px;" onclick="cancelRemoveReflection()">キャンセル</button>
+              </div>
+            ` : `<button class="btn ghost" style="padding:2px 8px;font-size:11px;margin-top:8px;" onclick="askRemoveReflection(${realIdx})">削除</button>`):''}
           </div>
         `:''}
       </div>`;
@@ -1364,7 +1379,13 @@ function renderReflListHtml(arr, isTeacher){
           <div class="refl-detail">
             ${r.playNotes ? `<div class="refl-section-label">① プレー面での振り返り・学び</div><div class="refl-body">${escapeHtml(r.playNotes)}</div>`:''}
             ${r.attitudeNotes ? `<div class="refl-section-label">② 雰囲気・取り組み面での振り返り・学び</div><div class="refl-body">${escapeHtml(r.attitudeNotes)}</div>`:''}
-            ${isTeacher? `<button class="btn ghost" style="padding:2px 8px;font-size:11px;margin-top:8px;" onclick="removeReflection(${realIdx})">削除</button>`:''}
+            ${isTeacher? (pendingDeleteReflection===realIdx ? `
+              <div class="delete-confirm-box" style="margin-top:8px;">
+                <div class="hint" style="color:var(--alert);font-weight:700;margin-bottom:8px;">この振り返りを削除します。よろしいですか？（元に戻せません）</div>
+                <button class="btn alert" style="padding:5px 12px;font-size:11px;" onclick="confirmRemoveReflection(${realIdx})">削除する</button>
+                <button class="btn ghost" style="padding:5px 12px;font-size:11px;margin-left:6px;" onclick="cancelRemoveReflection()">キャンセル</button>
+              </div>
+            ` : `<button class="btn ghost" style="padding:2px 8px;font-size:11px;margin-top:8px;" onclick="askRemoveReflection(${realIdx})">削除</button>`):''}
           </div>
         `:''}
       </div>`;
@@ -1578,6 +1599,9 @@ function renderCalendarSubscribeCard(){
 function renderStudentSettingsPanel(){
   const myEmail = (roster.students.find(s=>s.name===session.name)||{}).googleEmail || "";
   const gs = getMyGoalState(session.name);
+  const myReflStats = computeReflectionStatsByStudent()[session.name] || {count:0, lastDate:null};
+  const myMatchStats = computeMatchStatsByStudent()[session.name] || {played:0, win:0, lose:0, draw:0, unknown:0, partners:{}};
+  const myPartnerEntries = Object.keys(myMatchStats.partners);
 
   const monthlyHtml = (gs.monthlyIsCurrent && !editingMonthlyGoal) ? `
     <div class="goal-card monthly">
@@ -1645,6 +1669,17 @@ function renderStudentSettingsPanel(){
       ${tournamentHtml}
       <div class="status-msg" id="tournamentGoalMsg"></div>
     </div>
+    <div class="card">
+      <h3>これまでの記録</h3>
+      <div class="hint" style="margin-bottom:2px;">振り返り</div>
+      <div style="margin-bottom:10px;">${myReflStats.count}件${myReflStats.lastDate? `（最終提出：${fmtDateLabel(myReflStats.lastDate)}）`:''}</div>
+      <div class="hint" style="margin-bottom:2px;">試合成績</div>
+      <div style="margin-bottom:${myPartnerEntries.length? '4px':'0'};">${myMatchStats.played}試合中 ${myMatchStats.win}勝 ${myMatchStats.lose}敗${myMatchStats.draw? ` ${myMatchStats.draw}分`:''}${myMatchStats.unknown? `（うち${myMatchStats.unknown}件はゲームカウント未記入）`:''}</div>
+      ${myPartnerEntries.length? `
+        <div class="hint" style="margin-bottom:2px;">よく組むペア</div>
+        <div>${myPartnerEntries.map(p=>`${escapeHtml(p)}（${myMatchStats.partners[p].played}戦${myMatchStats.partners[p].win}勝${myMatchStats.partners[p].lose}敗）`).join('、')}</div>
+      `:''}
+    </div>
     ${renderCalendarSubscribeCard()}
   </div>`;
 }
@@ -1690,6 +1725,8 @@ function bindAppEvents(){
         render();
       }else{
         selectedDate = cell.dataset.date;
+        pendingDeleteSchedule = false;
+        pendingDeleteReflection = null;
         render();
       }
     };
@@ -1711,9 +1748,20 @@ function bindAppEvents(){
         $("#schedMsg").textContent = "保存しました。生徒の画面にも反映されます。";
       };
       const clearBtn = $("#clearSched");
-      if(clearBtn) clearBtn.onclick = async ()=>{
+      if(clearBtn) clearBtn.onclick = ()=>{
+        pendingDeleteSchedule = true;
+        render();
+      };
+      const confirmClearBtn = $("#confirmClearSched");
+      if(confirmClearBtn) confirmClearBtn.onclick = async ()=>{
         delete schedule[selectedDate];
         await safeSet("schedule", schedule, true);
+        pendingDeleteSchedule = false;
+        render();
+      };
+      const cancelClearBtn = $("#cancelClearSched");
+      if(cancelClearBtn) cancelClearBtn.onclick = ()=>{
+        pendingDeleteSchedule = false;
         render();
       };
       $("#enterBulk").onclick = ()=>{
@@ -2098,9 +2146,18 @@ async function removeAbsence(i){
   await safeSet("absences", absences, true);
   render();
 }
-async function removeReflection(i){
+function askRemoveReflection(i){
+  pendingDeleteReflection = i;
+  render();
+}
+function cancelRemoveReflection(){
+  pendingDeleteReflection = null;
+  render();
+}
+async function confirmRemoveReflection(i){
   reflections[selectedDate].splice(i,1);
   await safeSet("reflections", reflections, true);
+  pendingDeleteReflection = null;
   render();
 }
 function askRemoveStudent(name){
